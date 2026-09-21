@@ -55,6 +55,24 @@ func TestAnthropicRequestReportNoLoss(t *testing.T) {
 	}
 }
 
+func TestResponsesReasoningIsAdvisoryWhenAnswerIsPreserved(t *testing.T) {
+	result := ResponsesToChatWithReport("model", map[string]any{
+		"output": []any{
+			map[string]any{"type": "reasoning", "encrypted_content": "opaque"},
+			map[string]any{"type": "message", "content": []any{
+				map[string]any{"type": "output_text", "text": "hello"},
+			}},
+		},
+	})
+	if err := result.RejectMaterialLoss(); err != nil {
+		t.Fatal(err)
+	}
+	want := []Loss{{Path: "output.0", Class: LossDropped, Severity: LossAdvisory, Detail: "Responses reasoning content is not emitted by Chat"}}
+	if !reflect.DeepEqual(result.Report.Losses, want) {
+		t.Fatalf("losses = %#v, want %#v", result.Report.Losses, want)
+	}
+}
+
 func TestReportOrderingIsDeterministic(t *testing.T) {
 	report := NewReport(
 		material("z", LossDropped, "last"),

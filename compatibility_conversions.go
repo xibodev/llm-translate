@@ -161,7 +161,9 @@ func ResponsesToChatWithReport(model string, response map[string]any) Conversion
 		for i, raw := range output {
 			item, _ := asMap(raw)
 			kind, _ := item["type"].(string)
-			if kind != "message" && kind != "function_call" {
+			if kind == "reasoning" {
+				losses = append(losses, advisory(fmt.Sprintf("output.%d", i), LossDropped, "Responses reasoning content is not emitted by Chat"))
+			} else if kind != "message" && kind != "function_call" {
 				losses = append(losses, material(fmt.Sprintf("output.%d", i), LossDropped, "Responses output item is not representable by Chat"))
 			}
 			if kind == "message" {
