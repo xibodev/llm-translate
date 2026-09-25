@@ -2,6 +2,7 @@ package translate
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -311,16 +312,36 @@ func OpenAIToolsToAnthropic(tools []any) []any {
 }
 
 // OpenAIMessagesToAnthropic splits an OpenAI message list into Anthropic (system, messages).
+// cache_control on message content parts is carried to the Anthropic blocks;
+// cache_control on system parts needs OpenAIMessagesToAnthropicWithReport,
+// because the system returned here is a plain string.
 func OpenAIMessagesToAnthropic(messages []map[string]any) (string, []map[string]any) {
+	converted := openAIMessagesToAnthropic(messages)
+	return converted.system, converted.messages
+}
+
+func openAIMessagesToAnthropic(messages []map[string]any) anthropicConversion {
 	var systemParts []string
+	var systemPieces []textPiece
+	var systemCached, dropped []string
+	toolResults := -1
 	out := []map[string]any{}
-	for _, msg := range messages {
+	for i, msg := range messages {
 		role, _ := asStr(msg["role"])
 		content := msg["content"]
+		pieces, cached, lost := contentPieces(content, "messages."+strconv.Itoa(i))
+		dropped = append(dropped, lost...)
 		switch role {
 		case "system", "developer":
 			if text := openaiContentToText(content); text != "" {
 				systemParts = append(systemParts, text)
+				if len(systemPieces) > 0 {
+					pieces[0].sep = "\n\n"
+				}
+				systemPieces = append(systemPieces, pieces...)
+				systemCached = append(systemCached, cached...)
+			} else {
+				dropped = append(dropped, cached...)
 			}
 		case "assistant":
 			blocks := []any{}
@@ -330,7 +351,9 @@ func OpenAIMessagesToAnthropic(messages []map[string]any) (string, []map[string]
 			} else {
 				text = openaiContentToText(content)
 			}
-			if text != "" {
+			if len(cached) > 0 {
+				blocks = append(blocks, cacheBlocks(pieces)...)
+			} else if text != "" {
 				blocks = append(blocks, map[string]any{"type": "text", "text": text})
 			}
 			if calls, ok := asList(msg["tool_calls"]); ok {
@@ -370,22 +393,37 @@ func OpenAIMessagesToAnthropic(messages []map[string]any) (string, []map[string]
 			out = append(out, map[string]any{"role": "assistant", "content": blocks})
 		case "tool":
 			tid, _ := asStr(msg["tool_call_id"])
-			block := map[string]any{
-				"type": "tool_result", "tool_use_id": tid, "content": openaiContentToText(content),
+			var resultContent any = openaiContentToText(content)
+			if len(cached) > 0 {
+				resultContent = cacheBlocks(pieces)
 			}
-			if len(out) > 0 && out[len(out)-1]["role"] == "user" {
+			block := map[string]any{
+				"type": "tool_result", "tool_use_id": tid, "content": resultContent,
+			}
+			// Consecutive tool results share one user message. Only a message
+			// built from tool results takes more; user content that became
+			// blocks to carry cache_control does not.
+			if len(out) > 0 && out[len(out)-1]["role"] == "user" && len(out)-1 == toolResults {
 				if lst, ok := out[len(out)-1]["content"].([]any); ok {
 					out[len(out)-1]["content"] = append(lst, block)
 					continue
 				}
 			}
 			out = append(out, map[string]any{"role": "user", "content": []any{block}})
+			toolResults = len(out) - 1
 		default:
-			out = append(out, map[string]any{"role": "user", "content": openaiContentToText(content)})
+			var userContent any = openaiContentToText(content)
+			if len(cached) > 0 {
+				userContent = cacheBlocks(pieces)
+			}
+			out = append(out, map[string]any{"role": "user", "content": userContent})
 		}
 	}
-	system := strings.Join(systemParts, "\n\n")
-	return system, out
+	converted := anthropicConversion{system: strings.Join(systemParts, "\n\n"), messages: out, droppedCacheControl: dropped}
+	if len(systemCached) > 0 {
+		converted.systemBlocks = cacheBlocks(systemPieces)
+	}
+	return converted
 }
 
 // AnthropicResponseToOpenAI converts a non-streaming Anthropic Message to an OpenAI completion.
