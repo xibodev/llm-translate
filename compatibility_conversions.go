@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // OpenAIChatRequest is the two-part request value returned by Chat conversions.
@@ -16,6 +17,11 @@ type OpenAIChatRequest struct {
 type AnthropicMessages struct {
 	System   string
 	Messages []map[string]any
+	// SystemBlocks is set when a system or developer text part carries
+	// cache_control. It holds the System text as Anthropic text blocks split
+	// at the breakpoints, each carrying its cache_control. Send it as the
+	// request's system value instead of System, or the breakpoints are lost.
+	SystemBlocks []any `json:",omitempty"`
 }
 
 // AnthropicRequestToOpenAIWithReport delegates to AnthropicRequestToOpenAI and
@@ -26,6 +32,19 @@ func AnthropicRequestToOpenAIWithReport(payload map[string]any) ConversionResult
 	for _, path := range incompatible {
 		losses = append(losses, material(path, LossUnsupported, "value is not representable by OpenAI Chat"))
 	}
+	// cache_control is already reported above at its exact path. Thinking
+	// blocks are too, at the block path; the .reasoning loss lets a policy
+	// address reasoning the same way on every surface.
+	rawMessages, _ := asList(payload["messages"])
+	for i, raw := range rawMessages {
+		message, _ := asMap(raw)
+		blocks, _ := asList(message["content"])
+		for j, rawBlock := range blocks {
+			if block, _ := asMap(rawBlock); isThinkingBlock(block) {
+				losses = append(losses, droppedReasoning(fmt.Sprintf("messages.%d.content.%d", i, j)))
+			}
+		}
+	}
 	return ConversionResult[OpenAIChatRequest]{
 		Value:  OpenAIChatRequest{Messages: messages, Keywords: keywords},
 		Report: NewReport(losses...),
@@ -33,12 +52,18 @@ func AnthropicRequestToOpenAIWithReport(payload map[string]any) ConversionResult
 }
 
 // OpenAIMessagesToAnthropicWithReport converts messages and reports known
-// normalizations performed by the existing converter.
+// normalizations performed by the existing converter. cache_control on text
+// parts is carried, including on system parts through SystemBlocks; vendor
+// fields Anthropic cannot represent are reported at their paths.
 func OpenAIMessagesToAnthropicWithReport(messages []map[string]any) ConversionResult[AnthropicMessages] {
-	system, converted := OpenAIMessagesToAnthropic(messages)
+	conversion := openAIMessagesToAnthropic(messages)
 	var losses []Loss
+	for _, path := range conversion.droppedCacheControl {
+		losses = append(losses, droppedCacheControl(path, "Anthropic Messages"))
+	}
 	for i, message := range messages {
 		path := "messages." + strconv.Itoa(i)
+		losses = append(losses, chatMessageVendorLosses(path, message, "Anthropic Messages")...)
 		role, _ := message["role"].(string)
 		if role == "developer" {
 			losses = append(losses, advisory(path+".role", LossApproximated, "developer instruction is merged into Anthropic system text"))
@@ -60,7 +85,8 @@ func OpenAIMessagesToAnthropicWithReport(messages []map[string]any) ConversionRe
 			}
 		}
 	}
-	return ConversionResult[AnthropicMessages]{Value: AnthropicMessages{System: system, Messages: converted}, Report: NewReport(losses...)}
+	value := AnthropicMessages{System: conversion.system, Messages: conversion.messages, SystemBlocks: conversion.systemBlocks}
+	return ConversionResult[AnthropicMessages]{Value: value, Report: NewReport(losses...)}
 }
 
 // OpenAIResponseToAnthropicWithReport converts a Chat response with fidelity findings.
@@ -74,6 +100,8 @@ func OpenAIResponseToAnthropicWithReport(response map[string]any, model string) 
 		if choice["finish_reason"] == "content_filter" {
 			losses = append(losses, advisory("choices.0.finish_reason", LossApproximated, "content_filter maps to Anthropic end_turn"))
 		}
+		message, _ := asMap(choice["message"])
+		losses = append(losses, chatMessageVendorLosses("choices.0.message", message, "Anthropic Messages")...)
 	}
 	return ConversionResult[map[string]any]{Value: OpenAIResponseToAnthropic(response, model), Report: NewReport(losses...)}
 }
@@ -86,6 +114,9 @@ func AnthropicResponseToOpenAIWithReport(response map[string]any, model string) 
 			block, _ := asMap(raw)
 			if kind, _ := block["type"].(string); kind != "text" && kind != "tool_use" {
 				losses = append(losses, material(fmt.Sprintf("content.%d", i), LossDropped, "Anthropic content block is not representable by Chat"))
+			}
+			if isThinkingBlock(block) {
+				losses = append(losses, droppedReasoning(fmt.Sprintf("content.%d", i)))
 			}
 		}
 	}
@@ -124,8 +155,37 @@ func ChatToResponsesWithReport(model string, messages []map[string]any, kw map[s
 				}
 			}
 		}
+		prefix := "messages." + strconv.Itoa(i)
+		losses = append(losses, chatMessageVendorLosses(prefix, message, "OpenAI Responses")...)
+		losses = append(losses, responsesDroppedCacheControl(prefix, message)...)
 	}
 	return ConversionResult[map[string]any]{Value: ChatToResponses(model, messages, kw, stream), Report: NewReport(losses...)}
+}
+
+// responsesDroppedCacheControl reports the content-part cache_control values
+// that ChatToResponses drops. Responses has no cache breakpoints: it rebuilds
+// known user parts and flattens every other role to text. Unknown user part
+// types pass through unchanged, so their members are not dropped.
+func responsesDroppedCacheControl(prefix string, message map[string]any) []Loss {
+	role, _ := message["role"].(string)
+	passthrough := role != "system" && role != "developer" && role != "assistant" && role != "tool"
+	parts, _ := asList(message["content"])
+	var losses []Loss
+	for k, raw := range parts {
+		part, ok := asMap(raw)
+		if !ok || !present(part["cache_control"]) {
+			continue
+		}
+		switch part["type"] {
+		case "text", "input_text", "image_url", "input_image":
+		default:
+			if passthrough {
+				continue
+			}
+		}
+		losses = append(losses, droppedCacheControl(fmt.Sprintf("%s.content.%d.cache_control", prefix, k), "OpenAI Responses"))
+	}
+	return losses
 }
 
 // ResponsesRequestToChatWithReport preserves existing validation errors and
@@ -163,6 +223,7 @@ func ResponsesToChatWithReport(model string, response map[string]any) Conversion
 			kind, _ := item["type"].(string)
 			if kind == "reasoning" {
 				losses = append(losses, advisory(fmt.Sprintf("output.%d", i), LossDropped, "Responses reasoning content is not emitted by Chat"))
+				losses = append(losses, droppedReasoning(fmt.Sprintf("output.%d", i)))
 			} else if kind != "message" && kind != "function_call" {
 				losses = append(losses, material(fmt.Sprintf("output.%d", i), LossDropped, "Responses output item is not representable by Chat"))
 			}
@@ -198,6 +259,11 @@ func ChatResponseToResponsesWithRequestAndReport(model string, chat map[string]a
 	if choices, ok := asList(chat["choices"]); ok && len(choices) > 1 {
 		losses = append(losses, material("choices.1", LossDropped, "only the first Chat choice is converted"))
 	}
+	if choices, ok := asList(chat["choices"]); ok && len(choices) > 0 {
+		choice, _ := asMap(choices[0])
+		message, _ := asMap(choice["message"])
+		losses = append(losses, chatMessageVendorLosses("choices.0.message", message, "OpenAI Responses")...)
+	}
 	return ConversionResult[map[string]any]{Value: ChatResponseToResponsesWithRequest(model, chat, request), Report: NewReport(losses...)}
 }
 
@@ -211,10 +277,12 @@ func ResponsesToChatChunksWithReport(model string, response map[string]any) Conv
 }
 
 // OpenAIStreamToAnthropicSSEWithReport delegates stream conversion and reports
-// the token estimate used when chunks do not carry usage.
+// the token estimate used when chunks do not carry usage, and the vendor
+// fields of deltas that Anthropic events cannot carry.
 func OpenAIStreamToAnthropicSSEWithReport(chunks func() (string, bool), model string, emit func(string)) Report {
 	sawText := false
 	sawOutputUsage := false
+	var losses []Loss
 	observed := func() (string, bool) {
 		raw, ok := chunks()
 		if !ok {
@@ -232,6 +300,7 @@ func OpenAIStreamToAnthropicSSEWithReport(chunks func() (string, bool), model st
 					if text, _ := delta["content"].(string); text != "" {
 						sawText = true
 					}
+					losses = append(losses, deltaVendorLosses(choice, delta)...)
 				}
 			}
 		}
@@ -239,15 +308,36 @@ func OpenAIStreamToAnthropicSSEWithReport(chunks func() (string, bool), model st
 	}
 	OpenAIStreamToAnthropicSSE(observed, model, emit)
 	if sawText && !sawOutputUsage {
-		return NewReport(advisory("usage.output_tokens", LossApproximated, "output tokens are estimated from streamed text because usage is absent"))
+		losses = append(losses, advisory("usage.output_tokens", LossApproximated, "output tokens are estimated from streamed text because usage is absent"))
 	}
-	return NewReport()
+	return NewReport(losses...)
+}
+
+// deltaVendorLosses reports the vendor fields of one stream delta. Paths use
+// the choice index and the tool call index, which identify a call across the
+// chunks of a stream; repeats collapse in the report.
+func deltaVendorLosses(choice, delta map[string]any) []Loss {
+	prefix := "choices." + strconv.Itoa(toInt(choice["index"])) + ".delta"
+	var losses []Loss
+	if calls, ok := asList(delta["tool_calls"]); ok {
+		for _, raw := range calls {
+			if call, ok := asMap(raw); ok && hasThoughtSignature(call) {
+				losses = append(losses, droppedThoughtSignature(prefix+".tool_calls."+strconv.Itoa(toInt(call["index"])), "Anthropic Messages"))
+			}
+		}
+	}
+	if present(delta["reasoning_details"]) {
+		losses = append(losses, droppedReasoningDetails(prefix+".reasoning_details", "Anthropic Messages"))
+	}
+	return losses
 }
 
 // AnthropicSSEToOpenAIChunksWithReport delegates stream conversion and reports
-// usage fields that the existing Chat chunk adapter does not emit.
+// usage fields that the existing Chat chunk adapter does not emit, and the
+// thinking blocks it drops.
 func AnthropicSSEToOpenAIChunksWithReport(lines func() (string, bool), model string, emit func(string)) Report {
 	sawUsage := false
+	var losses []Loss
 	observed := func() (string, bool) {
 		raw, ok := lines()
 		if !ok {
@@ -260,11 +350,21 @@ func AnthropicSSEToOpenAIChunksWithReport(lines func() (string, bool), model str
 				sawUsage = true
 			}
 		}
+		// Parse the way the converter does, so the thinking blocks reported
+		// are exactly the ones it skips.
+		if data, ok := strings.CutPrefix(strings.TrimSpace(raw), "data:"); ok {
+			var event map[string]any
+			if json.Unmarshal([]byte(strings.TrimSpace(data)), &event) == nil && event["type"] == "content_block_start" {
+				if block, _ := asMap(event["content_block"]); isThinkingBlock(block) {
+					losses = append(losses, droppedReasoning("content."+strconv.Itoa(toInt(event["index"]))))
+				}
+			}
+		}
 		return raw, true
 	}
 	AnthropicSSEToOpenAIChunks(observed, model, emit)
 	if sawUsage {
-		return NewReport(material("usage", LossDropped, "Anthropic streaming usage is not emitted in Chat chunks"))
+		losses = append(losses, material("usage", LossDropped, "Anthropic streaming usage is not emitted in Chat chunks"))
 	}
-	return NewReport()
+	return NewReport(losses...)
 }

@@ -27,7 +27,9 @@ func openAIMessagesToAnthropicCase(name, messages string) goldenCase {
 		msgs := decodeJSON[[]map[string]any](t, messages)
 		system, converted := OpenAIMessagesToAnthropic(msgs)
 		reported := OpenAIMessagesToAnthropicWithReport(msgs)
-		samePayload(t, AnthropicMessages{System: system, Messages: converted}, reported.Value)
+		// The plain form returns the system as a string, so only the
+		// WithReport form can carry SystemBlocks.
+		samePayload(t, AnthropicMessages{System: system, Messages: converted}, AnthropicMessages{System: reported.Value.System, Messages: reported.Value.Messages})
 		return map[string]any{"input": msgs, "value": reported.Value, "report": reported.Report}
 	}}
 }

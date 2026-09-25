@@ -40,6 +40,12 @@
         "detail": "Responses reasoning content is not emitted by Chat",
         "path": "output.0",
         "severity": "advisory"
+      },
+      {
+        "class": "dropped",
+        "detail": "reasoning is not emitted by Chat",
+        "path": "output.0.reasoning",
+        "severity": "advisory"
       }
     ]
   },

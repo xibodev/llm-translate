@@ -31,6 +31,7 @@ func TestGoldenConversions(t *testing.T) {
 		anthropicResponseGoldenCases(),
 		streamGoldenCases(),
 		helperGoldenCases(),
+		vendorGoldenCases(),
 	} {
 		cases = append(cases, group...)
 	}

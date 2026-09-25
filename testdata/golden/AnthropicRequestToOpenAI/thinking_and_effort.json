@@ -39,6 +39,12 @@
         "detail": "value is not representable by OpenAI Chat",
         "path": "messages.1.content.0",
         "severity": "material"
+      },
+      {
+        "class": "dropped",
+        "detail": "reasoning is not emitted by Chat",
+        "path": "messages.1.content.0.reasoning",
+        "severity": "advisory"
       }
     ]
   },

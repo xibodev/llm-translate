@@ -42,6 +42,12 @@
         "severity": "advisory"
       },
       {
+        "class": "dropped",
+        "detail": "reasoning is not emitted by Chat",
+        "path": "output.0.reasoning",
+        "severity": "advisory"
+      },
+      {
         "class": "approximated",
         "detail": "buffered response is rendered as synthetic Chat chunks",
         "path": "stream",

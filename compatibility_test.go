@@ -67,7 +67,10 @@ func TestResponsesReasoningIsAdvisoryWhenAnswerIsPreserved(t *testing.T) {
 	if err := result.RejectMaterialLoss(); err != nil {
 		t.Fatal(err)
 	}
-	want := []Loss{{Path: "output.0", Class: LossDropped, Severity: LossAdvisory, Detail: "Responses reasoning content is not emitted by Chat"}}
+	want := []Loss{
+		{Path: "output.0", Class: LossDropped, Severity: LossAdvisory, Detail: "Responses reasoning content is not emitted by Chat"},
+		{Path: "output.0.reasoning", Class: LossDropped, Severity: LossAdvisory, Detail: "reasoning is not emitted by Chat"},
+	}
 	if !reflect.DeepEqual(result.Report.Losses, want) {
 		t.Fatalf("losses = %#v, want %#v", result.Report.Losses, want)
 	}

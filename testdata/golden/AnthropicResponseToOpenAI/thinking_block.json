@@ -37,9 +37,21 @@
       },
       {
         "class": "dropped",
+        "detail": "reasoning is not emitted by Chat",
+        "path": "content.0.reasoning",
+        "severity": "advisory"
+      },
+      {
+        "class": "dropped",
         "detail": "Anthropic content block is not representable by Chat",
         "path": "content.1",
         "severity": "material"
+      },
+      {
+        "class": "dropped",
+        "detail": "reasoning is not emitted by Chat",
+        "path": "content.1.reasoning",
+        "severity": "advisory"
       }
     ]
   },

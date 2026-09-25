@@ -10,7 +10,16 @@
     "data: {\"type\":\"content_block_stop\",\"index\":1}",
     "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}"
   ],
-  "report": {},
+  "report": {
+    "losses": [
+      {
+        "class": "dropped",
+        "detail": "reasoning is not emitted by Chat",
+        "path": "content.0.reasoning",
+        "severity": "advisory"
+      }
+    ]
+  },
   "value": [
     "{\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0}],\"id\":\"chatcmpl-RANDOM\",\"model\":\"gpt-test\",\"object\":\"chat.completion.chunk\"}",
     "{\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":null,\"index\":0}],\"id\":\"chatcmpl-RANDOM\",\"model\":\"gpt-test\",\"object\":\"chat.completion.chunk\"}",
