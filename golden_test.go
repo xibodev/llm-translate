@@ -32,6 +32,7 @@ func TestGoldenConversions(t *testing.T) {
 		streamGoldenCases(),
 		helperGoldenCases(),
 		vendorGoldenCases(),
+		alternateVendorGoldenCases(),
 	} {
 		cases = append(cases, group...)
 	}

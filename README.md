@@ -64,12 +64,16 @@ it at its exact path when they cannot:
 | Field | Carried | Otherwise reported as |
 |---|---|---|
 | Chat tool call `extra_content.google.thought_signature` (Gemini) | never; no other surface has a place for it | `material`, e.g. `messages.3.tool_calls.0.extra_content.google.thought_signature` |
+| Chat tool call `function.thought_signature` or call-level `thought_signature` (other Gemini providers) | never | `material`, e.g. `messages.3.tool_calls.0.function.thought_signature`, `messages.3.tool_calls.0.thought_signature` |
 | Chat message `reasoning_details` | never | `advisory`, e.g. `messages.2.reasoning_details` |
+| Chat message `reasoning_content` | never | `advisory`, e.g. `messages.2.reasoning_content` |
 | Chat content part `cache_control` | to Anthropic, on text parts | `advisory`, e.g. `messages.0.content.1.cache_control` |
 | Anthropic block `cache_control` | never; Chat has no breakpoints | `material` (`unsupported`) by `AnthropicRequestToOpenAIWithReport`, e.g. `system.0.cache_control` |
 
 A dropped thought signature is material because Gemini needs it back on the
-next turn of a tool call. Response and stream conversions use the same field
+next turn of a tool call. Each location that carries one is reported, and
+empty values carry nothing, so they are never reported. Response and stream
+conversions use the same field
 paths under `choices.N.message` and `choices.N.delta`. In a stream the index
 after `tool_calls` is the call's `index` field, which identifies it across
 chunks.
@@ -144,9 +148,11 @@ insignificant whitespace are not kept.
 
 The fields products depend on are typed rather than left in `Extra`:
 
-- `ChatToolCall.ExtraContent.Google.ThoughtSignature` (and the
-  `ChatToolCall.ThoughtSignature()` helper) for Gemini's
-  `extra_content.google.thought_signature`.
+- `ChatToolCall.ExtraContent.Google.ThoughtSignature` for Gemini's
+  `extra_content.google.thought_signature`. The `ChatToolCall.ThoughtSignature()`
+  helper returns the first non-empty signature from that field, then
+  `function.thought_signature`, then a call-level `thought_signature`; the
+  last two stay in `Extra`.
 - `ChatMessage.ReasoningDetails`, the raw `reasoning_details` array.
 - `CacheControl` on `ChatContentPart`, `AnthropicBlock` (content, system and
   nested tool_result blocks) and `AnthropicTool`.

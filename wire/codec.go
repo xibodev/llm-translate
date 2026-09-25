@@ -21,7 +21,8 @@
 // slice is omitted, while a non-nil empty slice encodes as [].
 //
 // Vendor fields that products depend on are modeled explicitly: the Gemini
-// thought signature on Chat tool calls (ChatToolCall.ExtraContent), the
+// thought signature on Chat tool calls (ChatToolCall.ExtraContent, and
+// ChatToolCall.ThoughtSignature for the other locations providers use), the
 // reasoning_details array on Chat messages (ChatMessage.ReasoningDetails),
 // and cache_control on Chat content parts and Anthropic content blocks,
 // system blocks and tools (CacheControl).

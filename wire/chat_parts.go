@@ -108,11 +108,29 @@ func (c ChatToolCall) MarshalJSON() ([]byte, error) {
 }
 
 // ThoughtSignature returns the Gemini thought signature of the call, or "".
+// Providers store it in different places; the first non-empty string wins,
+// in this order: extra_content.google.thought_signature (Google's documented
+// location), function.thought_signature, then a call-level
+// thought_signature. The last two are not modeled and stay in Extra.
 func (c ChatToolCall) ThoughtSignature() string {
-	if c.ExtraContent == nil || c.ExtraContent.Google == nil {
-		return ""
+	if c.ExtraContent != nil && c.ExtraContent.Google != nil && c.ExtraContent.Google.ThoughtSignature != "" {
+		return c.ExtraContent.Google.ThoughtSignature
 	}
-	return c.ExtraContent.Google.ThoughtSignature
+	if c.Function != nil {
+		if s := extraString(c.Function.Extra, "thought_signature"); s != "" {
+			return s
+		}
+	}
+	return extraString(c.Extra, "thought_signature")
+}
+
+// extraString returns the string value of an Extra member, or "".
+func extraString(extra map[string]json.RawMessage, key string) string {
+	var s string
+	if raw, ok := extra[key]; ok && json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return ""
 }
 
 // ChatFunctionCall is the function of a tool call. Arguments is a pointer

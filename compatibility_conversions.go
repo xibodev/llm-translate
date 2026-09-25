@@ -321,15 +321,12 @@ func deltaVendorLosses(choice, delta map[string]any) []Loss {
 	var losses []Loss
 	if calls, ok := asList(delta["tool_calls"]); ok {
 		for _, raw := range calls {
-			if call, ok := asMap(raw); ok && hasThoughtSignature(call) {
-				losses = append(losses, droppedThoughtSignature(prefix+".tool_calls."+strconv.Itoa(toInt(call["index"])), "Anthropic Messages"))
+			if call, ok := asMap(raw); ok {
+				losses = append(losses, thoughtSignatureLosses(prefix+".tool_calls."+strconv.Itoa(toInt(call["index"])), call, "Anthropic Messages")...)
 			}
 		}
 	}
-	if present(delta["reasoning_details"]) {
-		losses = append(losses, droppedReasoningDetails(prefix+".reasoning_details", "Anthropic Messages"))
-	}
-	return losses
+	return append(losses, reasoningFieldLosses(prefix, delta, "Anthropic Messages")...)
 }
 
 // AnthropicSSEToOpenAIChunksWithReport delegates stream conversion and reports

@@ -1,9 +1,6 @@
 package translate
 
-import (
-	"fmt"
-	"strconv"
-)
+import "strconv"
 
 // Vendor fields travel inside messages, where the conversions historically
 // dropped them without a trace. These helpers report each one at its exact
@@ -11,13 +8,14 @@ import (
 //
 //   - A dropped Gemini thought signature is material: without it the next
 //     turn of a multi-turn tool call fails or loses the model's reasoning.
-//   - Dropped reasoning_details and cache_control are advisory: the answer
-//     is intact, and a product that depends on them can still reject the
-//     loss by path.
+//     Providers store it at tool_calls.N.extra_content.google.thought_signature,
+//     tool_calls.N.function.thought_signature or tool_calls.N.thought_signature;
+//     each location that carries one is reported.
+//   - Dropped reasoning_details, reasoning_content and cache_control are
+//     advisory: the answer is intact, and a product that depends on them can
+//     still reject the loss by path.
 //   - Dropped reasoning items and blocks are reported at <item path>.reasoning
 //     so that a policy can match every reasoning loss with **.reasoning.
-
-const thoughtSignaturePath = "extra_content.google.thought_signature"
 
 // present reports whether a vendor value carries anything. Null, "" and
 // empty arrays or objects carry nothing, so dropping them loses nothing.
@@ -35,18 +33,35 @@ func present(value any) bool {
 	return true
 }
 
-func hasThoughtSignature(call map[string]any) bool {
+// thoughtSignatureLosses reports every thought signature one dropped tool
+// call carries. callPath is the path of the call. The locations are listed
+// in the order wire.ChatToolCall.ThoughtSignature reads them.
+func thoughtSignatureLosses(callPath string, call map[string]any, target string) []Loss {
 	extra, _ := asMap(call["extra_content"])
 	google, _ := asMap(extra["google"])
-	return present(google["thought_signature"])
-}
-
-func droppedThoughtSignature(callPath, target string) Loss {
-	return material(callPath+"."+thoughtSignaturePath, LossDropped, "Gemini thought signature is not representable by "+target+", so the next turn cannot replay it")
+	function, _ := asMap(call["function"])
+	var losses []Loss
+	for _, location := range []struct {
+		path  string
+		value any
+	}{
+		{"extra_content.google.thought_signature", google["thought_signature"]},
+		{"function.thought_signature", function["thought_signature"]},
+		{"thought_signature", call["thought_signature"]},
+	} {
+		if present(location.value) {
+			losses = append(losses, material(callPath+"."+location.path, LossDropped, "Gemini thought signature is not representable by "+target+", so the next turn cannot replay it"))
+		}
+	}
+	return losses
 }
 
 func droppedReasoningDetails(path, target string) Loss {
 	return advisory(path, LossDropped, "reasoning_details are not representable by "+target)
+}
+
+func droppedReasoningContent(path, target string) Loss {
+	return advisory(path, LossDropped, "reasoning_content is not representable by "+target)
 }
 
 func droppedCacheControl(path, target string) Loss {
@@ -61,40 +76,30 @@ func isThinkingBlock(block map[string]any) bool {
 	return block["type"] == "thinking" || block["type"] == "redacted_thinking"
 }
 
-// chatMessageVendorLosses reports the thought signatures and
-// reasoning_details that a conversion of one Chat message to target drops.
-// prefix is the message path, such as messages.3 or choices.0.message.
+// chatMessageVendorLosses reports the thought signatures, reasoning_details
+// and reasoning_content that a conversion of one Chat message to target
+// drops. prefix is the message path, such as messages.3 or choices.0.message.
 func chatMessageVendorLosses(prefix string, message map[string]any, target string) []Loss {
 	var losses []Loss
 	if calls, ok := asList(message["tool_calls"]); ok {
 		for j, raw := range calls {
-			if call, ok := asMap(raw); ok && hasThoughtSignature(call) {
-				losses = append(losses, droppedThoughtSignature(prefix+".tool_calls."+strconv.Itoa(j), target))
+			if call, ok := asMap(raw); ok {
+				losses = append(losses, thoughtSignatureLosses(prefix+".tool_calls."+strconv.Itoa(j), call, target)...)
 			}
 		}
 	}
+	return append(losses, reasoningFieldLosses(prefix, message, target)...)
+}
+
+// reasoningFieldLosses reports the reasoning fields of one Chat message or
+// delta that a conversion to target drops.
+func reasoningFieldLosses(prefix string, message map[string]any, target string) []Loss {
+	var losses []Loss
 	if present(message["reasoning_details"]) {
 		losses = append(losses, droppedReasoningDetails(prefix+".reasoning_details", target))
 	}
-	return losses
-}
-
-// contentPartCacheControls returns the paths of the content parts of one
-// Chat message that carry cache_control, split by whether the part is a text
-// part.
-func contentPartCacheControls(prefix string, content any) (text, other []string) {
-	parts, _ := asList(content)
-	for k, raw := range parts {
-		part, ok := asMap(raw)
-		if !ok || !present(part["cache_control"]) {
-			continue
-		}
-		path := fmt.Sprintf("%s.content.%d.cache_control", prefix, k)
-		if _, isText := part["text"].(string); isText && part["type"] == "text" {
-			text = append(text, path)
-		} else {
-			other = append(other, path)
-		}
+	if present(message["reasoning_content"]) {
+		losses = append(losses, droppedReasoningContent(prefix+".reasoning_content", target))
 	}
-	return text, other
+	return losses
 }
